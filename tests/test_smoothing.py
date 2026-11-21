@@ -1,45 +1,39 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from app.smoothing import crosses_land, cubic_bspline
+from app.smoothing import catmull_rom, crosses_land, simplify_path, smooth_route
 from mapeo_ruta.ocean_data import OceanCurrentField
 
 
 def _field(water: np.ndarray) -> OceanCurrentField:
+    n_rows, n_cols = water.shape
     return OceanCurrentField(
-        lats=np.array([0.0, 1.0, 2.0]),
-        lons=np.array([10.0, 11.0, 12.0]),
+        lats=np.arange(n_rows) * 0.1,
+        lons=10.0 + np.arange(n_cols) * 0.1,
         uo=np.where(water, 0.0, np.nan),
         vo=np.where(water, 0.0, np.nan),
         selected_time="2026-11-20T00:00:00",
         selected_depth_m=0.5,
-        dimensions={"latitude": 3, "longitude": 3},
+        dimensions={"latitude": n_rows, "longitude": n_cols},
         available_variables=["uo", "vo"],
         is_simulated=True,
     )
 
 
-def test_clamped_spline_preserves_exact_endpoints_and_sample_count() -> None:
-    controls = [[0.0, 0.0], [1.0, 1.0], [2.0, 0.0], [3.0, 1.0], [4.0, 0.0]]
-    samples_per_segment = 5
-    result = cubic_bspline(controls, samples_per_segment)
-
-    assert result[0] == controls[0]
-    assert result[-1] == controls[-1]
-    assert len(result) == (len(controls) - 3) * samples_per_segment + 1
+def _turns(coords: list[list[float]]) -> list[float]:
+    out = []
+    for a, b, c in zip(coords, coords[1:], coords[2:]):
+        d = math.degrees(math.atan2(c[1] - b[1], c[0] - b[0]) - math.atan2(b[1] - a[1], b[0] - a[0]))
+        out.append(abs((d + 180) % 360 - 180))
+    return out
 
 
-def test_collinear_control_points_remain_collinear() -> None:
-    controls = [[0.0, 2.0], [1.0, 4.0], [2.0, 6.0], [3.0, 8.0], [4.0, 10.0]]
-    result = cubic_bspline(controls, samples_per_segment=4)
-    assert all(np.isclose(lat, 2.0 * lon + 2.0) for lon, lat in result)
-
-
-def test_fewer_than_four_points_are_returned_unchanged() -> None:
-    controls = [[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]]
-    result = cubic_bspline(controls, samples_per_segment=8)
-    assert result is controls
+def _l_path() -> list[list[float]]:
+    # camino A* en L: 10 nodos hacia el este y luego 10 hacia el norte
+    return [[10.0 + 0.1 * i, 0.0] for i in range(10)] + [[10.9, 0.1 * j] for j in range(1, 10)]
 
 
 def test_crosses_land_uses_nearest_grid_cell() -> None:
@@ -47,5 +41,53 @@ def test_crosses_land_uses_nearest_grid_cell() -> None:
     water[1, 1] = False
     field = _field(water)
 
-    assert crosses_land([[10.05, 0.05], [11.0, 1.0]], field)
-    assert not crosses_land([[10.05, 0.05], [12.0, 2.0]], field)
+    assert crosses_land([[10.01, 0.01], [10.1, 0.1]], field)
+    assert not crosses_land([[10.01, 0.01], [10.2, 0.2]], field)
+
+
+def test_collinear_run_collapses_to_endpoints() -> None:
+    field = _field(np.ones((12, 12), dtype=bool))
+    raw = [[10.0 + 0.1 * i, 0.0] for i in range(10)]
+    assert simplify_path(raw, field) == [raw[0], raw[-1]]
+
+
+def test_simplify_keeps_corner_when_land_blocks_shortcut() -> None:
+    water = np.ones((12, 12), dtype=bool)
+    water[2:12, 0:9] = False  # tierra en el interior de la L
+    field = _field(water)
+    raw = _l_path()
+    kept = simplify_path(raw, field)
+    assert len(kept) == 3 and kept[0] == raw[0] and kept[-1] == raw[-1] and kept[1] in raw[8:12]
+
+
+def test_l_path_becomes_gentle_curve_in_water_with_exact_endpoints() -> None:
+    water = np.ones((12, 12), dtype=bool)
+    water[2:12, 0:9] = False
+    field = _field(water)
+    raw = _l_path()
+    result = smooth_route(raw, field)
+
+    assert result.applied and result.simplified_points == 3
+    assert result.coordinates[0] == raw[0] and result.coordinates[-1] == raw[-1]
+    assert not crosses_land(result.coordinates, field)
+    assert max(_turns(result.coordinates)) < 20  # la L original gira 90° de golpe
+    assert result.max_deviation_km > 0
+
+
+def test_curve_touching_land_falls_back_to_raw() -> None:
+    water = np.ones((12, 12), dtype=bool)
+    water[1, 10] = False  # tierra pegada a la esquina: la curva redondeada la toca, la L no
+    field = _field(water)
+    raw = [[10.0 + 0.1 * i, 0.0] for i in range(10)] + [[10.9, 0.0 + 0.1 * j] for j in range(1, 10)]
+    raw = [c for c in raw if not (abs(c[0] - 11.0) < 1e-9 and abs(c[1] - 0.1) < 1e-9)]
+    result = smooth_route(raw, field)
+    if not result.applied:
+        assert result.coordinates == raw and "tierra" in result.reason
+    assert not crosses_land(result.coordinates, field)
+
+
+def test_catmull_rom_passes_through_controls() -> None:
+    controls = [[10.0, 0.0], [10.5, 0.2], [10.9, 0.9]]
+    curve = catmull_rom(controls)
+    assert curve[0] == controls[0] and curve[-1] == controls[-1]
+    assert any(np.allclose(p, controls[1]) for p in curve)

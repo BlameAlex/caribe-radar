@@ -296,3 +296,17 @@ def test_simulated_netcdf_roundtrip(tmp_path: Path) -> None:
     assert report.optimized_route.found is True
     assert report.shortest_navigable.found is True
     assert report.optimized_route.time_seconds <= report.shortest_navigable.time_seconds
+
+
+def test_route_request_ignores_unknown_fields() -> None:
+    from app.schemas import RouteRequest
+
+    request = RouteRequest.model_validate(
+        {
+            "id": "x",
+            "vessel_speed_knots": 9,
+            "origin": {"lat": 20.0, "lon": -86.0, "name": "A"},
+            "destination": {"lat": 20.1, "lon": -86.1, "id": "b"},
+        }
+    )
+    assert request.origin.lat == 20.0 and request.destination.lon == -86.1

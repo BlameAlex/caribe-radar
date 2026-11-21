@@ -10,7 +10,7 @@ from mapeo_ruta.route_optimizer import optimize_maritime_route
 
 from app.schemas import Point
 from app.settings import settings
-from app.smoothing import crosses_land, cubic_bspline
+from app.smoothing import METHOD, SmoothingResult, smooth_route
 
 
 class RouteInputError(ValueError):
@@ -74,16 +74,13 @@ def calculate_route(origin: Point, destination: Point) -> dict[str, object]:
     if geojson is None:
         return {"not_found": route_result.message}
     raw = geojson["geometry"]["coordinates"]
-    candidate = cubic_bspline(raw, settings.smoothing_samples) if settings.smoothing else raw
-    applied = candidate is not raw and not crosses_land(candidate, routing_field)
-    reason = None
-    if not settings.smoothing:
-        reason = "El suavizado está desactivado en la configuración."
-    elif candidate is raw:
-        reason = "La ruta tiene menos de 4 puntos de control para una B-spline cúbica."
-    elif not applied:
-        reason = "El suavizado toca tierra o celdas sin datos; se conserva la ruta A* original."
-    coordinates = candidate if applied else raw
+    # Distancia y tiempo son los de la ruta A* validada (nodos de la cuadrícula); la curva suavizada
+    # solo mejora la geometría y se desvía de ella `max_deviation_km`.
+    if settings.smoothing:
+        smoothed = smooth_route(raw, routing_field)
+    else:
+        smoothed = SmoothingResult(raw, False, len(raw), 0.0, "El suavizado está desactivado en la configuración.")
+    coordinates = smoothed.coordinates
     return {
         "route": {**geojson["geometry"], "coordinates": coordinates},
         "meta": {
@@ -96,10 +93,12 @@ def calculate_route(origin: Point, destination: Point) -> dict[str, object]:
             ],
             "disclaimer": NAVIGATION_DISCLAIMER,
             "smoothing": {
-                "applied": applied,
-                "method": "cubic_bspline_clamped",
+                "applied": smoothed.applied,
+                "method": METHOD,
                 "raw_points": len(raw),
-                "reason": reason,
+                "simplified_points": smoothed.simplified_points,
+                "max_deviation_km": round(smoothed.max_deviation_km, 3),
+                "reason": smoothed.reason,
             },
         },
     }
