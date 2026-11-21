@@ -15,6 +15,13 @@ class RouteRequest(BaseModel):
     destination: Point
 
 
+class SmoothingMeta(BaseModel):
+    applied: bool
+    method: str
+    raw_points: int
+    reason: str | None = None
+
+
 class RouteMeta(BaseModel):
     distance_km: float
     time_minutes: float
@@ -22,6 +29,7 @@ class RouteMeta(BaseModel):
     selected_time: str
     snap_warnings: list[str]
     disclaimer: str
+    smoothing: SmoothingMeta
 
 
 class RouteGeometry(BaseModel):

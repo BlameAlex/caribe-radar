@@ -50,6 +50,7 @@ def test_same_point_and_excessive_span_return_422() -> None:
 def test_synthetic_route_returns_lon_lat_geojson(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     result = generate_simulated_netcdf(get_default_scenario(), output_path=tmp_path / "synthetic.nc")
     monkeypatch.setattr(routing, "acquire_ocean_data", lambda **kwargs: result)
+    monkeypatch.setattr(routing, "crosses_land", lambda coords, field: False)
     response = client.post("/api/v1/routes", json=_default_request())
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -57,6 +58,10 @@ def test_synthetic_route_returns_lon_lat_geojson(monkeypatch: pytest.MonkeyPatch
     assert route["type"] == "LineString"
     assert len(route["coordinates"]) >= 2
     assert all(len(coord) == 2 and -180 <= coord[0] <= 180 and -90 <= coord[1] <= 90 for coord in route["coordinates"])
+    smoothing = payload["meta"]["smoothing"]
+    assert smoothing["applied"] is True
+    assert smoothing["method"] == "cubic_bspline_clamped"
+    assert len(route["coordinates"]) > smoothing["raw_points"]
     field = load_ocean_currents(result.netcdf_path, target_datetime=get_default_scenario().target_datetime)
     origin_snap = snap_point_to_water(field, DEFAULT_ORIGIN, "Origen")
     destination_snap = snap_point_to_water(field, DEFAULT_DESTINATION, "Destino")
@@ -65,6 +70,32 @@ def test_synthetic_route_returns_lon_lat_geojson(monkeypatch: pytest.MonkeyPatch
     assert route["coordinates"][-1][0] == pytest.approx(destination_snap.node_lon, abs=1e-6)
     assert route["coordinates"][-1][1] == pytest.approx(destination_snap.node_lat, abs=1e-6)
     assert "SIMULADOS" in payload["meta"]["data_source"]
+
+
+def test_synthetic_land_guard_keeps_raw_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    result = generate_simulated_netcdf(get_default_scenario(), output_path=tmp_path / "synthetic.nc")
+    monkeypatch.setattr(routing, "acquire_ocean_data", lambda **kwargs: result)
+    field = load_ocean_currents(result.netcdf_path, target_datetime=get_default_scenario().target_datetime)
+    land_row, land_col = np.argwhere(~field.water_mask)[0]
+    land_point = [float(field.lons[land_col]), float(field.lats[land_row])]
+    original_smoother = routing.cubic_bspline
+
+    def append_land_point(coords: list[list[float]], samples: int) -> list[list[float]]:
+        return [*original_smoother(coords, samples), land_point]
+
+    monkeypatch.setattr(routing.settings, "smoothing", False)
+    raw_response = client.post("/api/v1/routes", json=_default_request())
+    assert raw_response.status_code == 200, raw_response.text
+    raw_coordinates = raw_response.json()["route"]["coordinates"]
+
+    monkeypatch.setattr(routing.settings, "smoothing", True)
+    monkeypatch.setattr(routing, "cubic_bspline", append_land_point)
+    guarded_response = client.post("/api/v1/routes", json=_default_request())
+    assert guarded_response.status_code == 200, guarded_response.text
+    guarded = guarded_response.json()
+    assert guarded["meta"]["smoothing"]["applied"] is False
+    assert "tierra" in guarded["meta"]["smoothing"]["reason"]
+    assert guarded["route"]["coordinates"] == raw_coordinates
 
 
 def test_blocked_field_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:

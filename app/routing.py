@@ -10,6 +10,7 @@ from mapeo_ruta.route_optimizer import optimize_maritime_route
 
 from app.schemas import Point
 from app.settings import settings
+from app.smoothing import crosses_land, cubic_bspline
 
 
 class RouteInputError(ValueError):
@@ -72,8 +73,19 @@ def calculate_route(origin: Point, destination: Point) -> dict[str, object]:
     geojson = route_result.to_geojson_feature()
     if geojson is None:
         return {"not_found": route_result.message}
+    raw = geojson["geometry"]["coordinates"]
+    candidate = cubic_bspline(raw, settings.smoothing_samples) if settings.smoothing else raw
+    applied = candidate is not raw and not crosses_land(candidate, routing_field)
+    reason = None
+    if not settings.smoothing:
+        reason = "El suavizado está desactivado en la configuración."
+    elif candidate is raw:
+        reason = "La ruta tiene menos de 4 puntos de control para una B-spline cúbica."
+    elif not applied:
+        reason = "El suavizado toca tierra o celdas sin datos; se conserva la ruta A* original."
+    coordinates = candidate if applied else raw
     return {
-        "route": geojson["geometry"],
+        "route": {**geojson["geometry"], "coordinates": coordinates},
         "meta": {
             "distance_km": route_result.distance_km,
             "time_minutes": route_result.time_minutes,
@@ -83,5 +95,11 @@ def calculate_route(origin: Point, destination: Point) -> dict[str, object]:
                 warning for warning in (report.origin_snap.warning, report.destination_snap.warning) if warning
             ],
             "disclaimer": NAVIGATION_DISCLAIMER,
+            "smoothing": {
+                "applied": applied,
+                "method": "cubic_bspline_clamped",
+                "raw_points": len(raw),
+                "reason": reason,
+            },
         },
     }

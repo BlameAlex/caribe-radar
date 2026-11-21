@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     max_span_deg: float = 3.0
     refine_factor: int = 1
     cache_dir: Path = Path("data/cache")
+    smoothing: bool = True
+    smoothing_samples: int = 8
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 
