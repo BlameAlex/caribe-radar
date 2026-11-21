@@ -1,0 +1,52 @@
+[
+  {
+    "id": "port-juarez",
+    "name": "Base / Puerto Cancún",
+    "short_name": "Puerto Cancún",
+    "municipality": "Benito Juárez (Cancún)",
+    "lat": 21.1844,
+    "lng": -86.8091,
+    "description": "Muelle fiscal y terminal pesquera artesanal. Punto de despacho norte.",
+    "facilities": "Atraque calado medio, rampa de desembarque, suministro diésel."
+  },
+  {
+    "id": "puerto-morelos",
+    "name": "Muelle Puerto Morelos",
+    "short_name": "Puerto Morelos",
+    "municipality": "Puerto Morelos",
+    "lat": 20.8475,
+    "lng": -86.8747,
+    "description": "Muelle de altura y estación de apoyo logístico frente a barrera arrecifal.",
+    "facilities": "Tolvas de transferencia mecanizada de biomasa marina."
+  },
+  {
+    "id": "playa-carmen",
+    "name": "Terminal Playa del Carmen",
+    "short_name": "Playa del Carmen",
+    "municipality": "Solidaridad",
+    "lat": 20.6214,
+    "lng": -87.0742,
+    "description": "Terminal marítima de cabotaje y enlace intermedio continental.",
+    "facilities": "Coordinación con brigadas costeras de ZOFEMAT."
+  },
+  {
+    "id": "cozumel",
+    "name": "Muelle Fiscal Cozumel",
+    "short_name": "Cozumel",
+    "municipality": "Cozumel",
+    "lat": 20.5111,
+    "lng": -86.9497,
+    "description": "Muelle insular abrigado en el canal de Cozumel.",
+    "facilities": "Estación naval y rada de abrigo para flotas mayores."
+  },
+  {
+    "id": "punta-sam",
+    "name": "Terminal Punta Sam",
+    "short_name": "Punta Sam",
+    "municipality": "Cancún Norte",
+    "lat": 21.2367,
+    "lng": -86.8033,
+    "description": "Terminal de transbordadores con patio de descarga pesada.",
+    "facilities": "Grúa pluma para transferencia de tolvas."
+  }
+]

@@ -58,6 +58,22 @@ curl "localhost:8000/api/v1/sargassum/collection-areas?run_id=$RUN"
 
 `run_id` y `minutes` se validan con expresiones regulares estrictas (`422`) y la ruta resuelta debe quedar dentro del directorio de exportación; si el archivo no existe, `404`.
 
+## Puertos y alertas de recolección
+
+`GET /api/v1/ports` sirve los 5 puertos de salida desde `data/ports.json`.
+
+Las alertas se **pre-generan** y la API solo lee el resultado (`data/alerts/<run_id>.json`):
+
+```sh
+uv run python -m app.precompute_alerts [--run-id RUN] [--min-density 2.5e-4] [--top 3]
+curl localhost:8000/api/v1/alerts                 # resumen: masa, intersección, destino, puerto recomendado
+curl localhost:8000/api/v1/alerts/alert-t1320     # detalle con `routes` por puerto
+```
+
+Detección (`app/alerts.py`): por cada fotograma se forman masas (componentes 8-conexas de celdas con densidad ≥ `min_density`, por defecto 2.5e-4, ≈ percentil 95: con 1e-4 una sola masa llega a 279 celdas y los episodios se funden, con 5e-4 se fragmentan en celdas sueltas). Una masa alcanza la zona si alguna celda intersecta el polígono de recolección. Los fotogramas consecutivos con masa en la zona forman un episodio; el pico de cada episodio (mayor densidad dentro de la zona) es una alerta y se conservan los 3 episodios más fuertes. Si hay menos de 3 episodios se completan con fotogramas separados al menos 3 h (`selection.fallback_used`). El destino es el centroide de la celda más densa dentro de la zona; si la malla de ruteo (~0.083°) lo marca como tierra se usa el nodo marino más cercano dentro de la zona, y si no hay ninguno `calculate_route` lo ajusta al agua y lo avisa en `snap_warnings`.
+
+El CLI llama a `calculate_route` para cada alerta × puerto (puede descargar corrientes de Copernicus), guarda el estado y el error de cada ruta, y marca `recommended_port_id` como la de menor `time_minutes`. `GET /api/v1/alerts*` responde `404` si el id no existe y `503` si falta la caché (hay que ejecutar el CLI). Vuelve a ejecutarlo cuando cambie el algoritmo de rutas.
+
 ## Resultados de verificación reales
 
 El `curl` real Cancún → Playa del Carmen respondió `200`. Copernicus reutilizó un NetCDF real que ya estaba en caché. La respuesta aplicó el suavizado: nueve puntos A* produjeron 49 puntos, con los extremos anclados a las celdas marinas ajustadas (desplazamientos de 10.54 km y 5.24 km).

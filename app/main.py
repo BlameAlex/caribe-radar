@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
+from app.alerts import router as alerts_router
+from app.ports import router as ports_router
 from app.routing import DataAcquisitionError, RouteInputError, calculate_route
 from app.sargassum import router as sargassum_router
 from app.schemas import RouteRequest, RouteResponse
@@ -12,6 +14,8 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 if settings.cors_origins:
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["GET", "POST"], allow_headers=["*"])
 app.include_router(sargassum_router)
+app.include_router(ports_router)
+app.include_router(alerts_router)
 
 
 @app.get("/health")
