@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from app.landmask import LandMask
 from mapeo_ruta.ocean_data import OceanCurrentField
 
 _KM_PER_DEG = 111.32
@@ -29,35 +30,87 @@ def crosses_land(coords: list[list[float]], field: OceanCurrentField) -> bool:
     return not bool(field.water_mask[rows, cols].all())
 
 
-def _segment_is_clear(a: list[float], b: list[float], field: OceanCurrentField) -> bool:
-    """Visibilidad directa sobre el agua: muestrea a-b a un cuarto de celda y prueba cada muestra."""
-    cell = min(
-        float(np.min(np.diff(field.lons))) if len(field.lons) > 1 else 1.0,
-        float(np.min(np.diff(field.lats))) if len(field.lats) > 1 else 1.0,
-    )
-    span = max(abs(b[0] - a[0]), abs(b[1] - a[1]))
-    steps = max(2, math.ceil(span / (cell / 4.0)) + 1)
-    t = np.linspace(0.0, 1.0, steps)
-    samples = np.column_stack((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
-    return not crosses_land(samples.tolist(), field)
+def haversine_km_array(lon1, lat1, lon2, lat2):
+    """Haversine vectorizada (km); admite escalares y arreglos."""
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    h = np.sin((p2 - p1) / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(np.radians(np.asarray(lon2) - lon1) / 2) ** 2
+    return 12742.0 * np.arcsin(np.sqrt(h))
+
+
+def haversine_km(a: list[float], b: list[float]) -> float:
+    """Distancia (km) entre dos puntos [lon, lat]."""
+    return float(haversine_km_array(a[0], a[1], b[0], b[1]))
+
+
+class LandGuard:
+    """Decide qué muestras [lon, lat] están sobre tierra.
+
+    - Donde hay máscara de alta resolución: manda ella (1 km, costa real).
+    - Fuera de su cobertura: celda más cercana del modelo.
+    - Alrededor de origen/destino (puertos en la costa) no se evalúa: `coast_km` bajo la máscara fina;
+      sin ella, el radio dado en `ends` (la franja costera sin datos del modelo es más ancha que la
+      celda y no se puede verificar).
+    """
+
+    def __init__(
+        self,
+        field: OceanCurrentField,
+        mask: LandMask | None = None,
+        ends: list[tuple[list[float], float]] | None = None,
+        coast_km: float = 1.0,
+    ) -> None:
+        self.field, self.mask, self.ends, self.coast_km = field, mask, ends or [], coast_km
+
+    def blocked(self, pts: np.ndarray) -> np.ndarray:
+        model_land = ~self.field.water_mask[
+            _nearest_index(self.field.lats, pts[:, 1]), _nearest_index(self.field.lons, pts[:, 0])
+        ]
+        if self.mask is not None:
+            covered, fine_land = self.mask.query(pts)
+            land = np.where(covered, fine_land, model_land)
+        else:
+            covered, land = np.zeros(len(pts), bool), model_land
+        for (lon, lat), exempt_km in self.ends:
+            near = haversine_km_array(lon, lat, pts[:, 0], pts[:, 1])
+            land = land & ~(near <= np.where(covered, self.coast_km, exempt_km))
+        return land
+
+    def step_deg(self) -> float:
+        cell = min(float(np.min(np.diff(self.field.lons))), float(np.min(np.diff(self.field.lats))))
+        if self.mask is not None:
+            cell = min(cell, self.mask.dlat)
+        return cell / 2.0
+
+    def segment_clear(self, a: list[float], b: list[float]) -> bool:
+        span = max(abs(b[0] - a[0]), abs(b[1] - a[1]))
+        t = np.linspace(0.0, 1.0, max(2, math.ceil(span / self.step_deg()) + 1))
+        samples = np.column_stack((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+        return not bool(self.blocked(samples).any())
+
+    def path_clear(self, curve: list[list[float]]) -> bool:
+        """Muestras y tramos entre muestras consecutivas libres de tierra."""
+        return all(self.segment_clear(curve[i], curve[i + 1]) for i in range(len(curve) - 1))
 
 
 def simplify_path(
-    coords: list[list[float]], field: OceanCurrentField, max_hop: int | None = None
+    coords: list[list[float]],
+    field: OceanCurrentField | None = None,
+    max_hop: int | None = None,
+    guard: LandGuard | None = None,
 ) -> list[list[float]]:
     """String pulling: conserva un nodo solo si el segmento al siguiente nodo conservado cruzaría tierra.
 
     `max_hop` limita cuántos nodos originales puede saltar un segmento (None = sin límite).
     """
+    guard = guard or LandGuard(field)
     n = len(coords)
     if n < 3:
         return list(coords)
     kept = [coords[0]]
     i = 0
     while i < n - 1:
-        far = n - 1 if max_hop is None else min(n - 1, i + max_hop)
-        j = far
-        while j > i + 1 and not _segment_is_clear(coords[i], coords[j], field):
+        j = n - 1 if max_hop is None else min(n - 1, i + max_hop)
+        while j > i + 1 and not guard.segment_clear(coords[i], coords[j]):
             j -= 1
         kept.append(coords[j])
         i = j
@@ -118,55 +171,39 @@ class SmoothingResult:
     reason: str | None
 
 
-def haversine_km(a: list[float], b: list[float]) -> float:
-    """Distancia (km) entre dos puntos [lon, lat]."""
-    p1, p2 = math.radians(a[1]), math.radians(b[1])
-    h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(b[0] - a[0]) / 2) ** 2
-    return 12742.0 * math.asin(math.sqrt(h))
-
-
-def _crosses_land_outside_ends(
-    curve: list[list[float]], field: OceanCurrentField, exempt_start_km: float, exempt_end_km: float
-) -> bool:
-    """Como crosses_land, pero ignora las muestras a lo largo de la curva dentro de cada tramo exento de los extremos."""
-    if exempt_start_km <= 0 and exempt_end_km <= 0:
-        return crosses_land(curve, field)
-    steps = np.array([haversine_km(curve[i], curve[i + 1]) for i in range(len(curve) - 1)])
-    along = np.concatenate(([0.0], np.cumsum(steps)))
-    keep = (along > exempt_start_km) & (along < along[-1] - exempt_end_km)
-    inner = [c for c, k in zip(curve, keep) if k]
-    return crosses_land(inner, field)
-
-
 def smooth_route(
     raw: list[list[float]],
     field: OceanCurrentField,
     origin: list[float] | None = None,
     destination: list[float] | None = None,
     exempt_km: float = 2.0,
+    mask: LandMask | None = None,
 ) -> SmoothingResult:
-    """Simplifica el camino A* por línea de visión y lo suaviza con Catmull-Rom, validando contra tierra.
+    """Simplifica por línea de visión el camino [origen] + A* + [destino] y lo suaviza con Catmull-Rom.
 
-    `origin`/`destination` ([lon, lat] solicitados) se anteponen/añaden como conectores desde los nodos
-    A*, dentro de la misma curva (sin quiebres en las uniones). Con conectores, las muestras a menos de
-    `exempt_km` de cada extremo, o toda la longitud del conector si es mayor, no se validan contra tierra:
-    los puertos están en la costa y la franja costera sin datos del modelo es más ancha que 2 km, así que
-    el conector cruza celdas que el modelo no puede verificar. El tramo A* sí se valida completo.
-    Intenta simplificación total, luego una menos agresiva (saltos de hasta 3 nodos); si ninguna curva
-    está libre de tierra, devuelve el A* original con conectores rectos.
+    `origin`/`destination` ([lon, lat] solicitados) forman parte del mismo camino: los conectores se
+    simplifican y suavizan junto con el A*, así un nodo A* que sobrepasa el destino se descarta y no
+    hay quiebres en las uniones. Cada curva se valida con `LandGuard` (máscara fina si hay, si no el
+    modelo). Intenta simplificación total, luego saltos de hasta 3 nodos, luego sin simplificar; si
+    ninguna curva está libre de tierra, devuelve el A* con conectores rectos.
+    `simplified_points` = puntos de control de la curva final, extremos incluidos.
     """
     head = [list(origin)] if origin and list(origin) != raw[0] else []
     tail = [list(destination)] if destination and list(destination) != raw[-1] else []
-    reference = head + raw + tail
-    if len(raw) < 3 and not (head or tail):
+    full = head + raw + tail
+    if len(full) < 3:
         return SmoothingResult(raw, False, len(raw), 0.0, "La ruta tiene menos de 3 puntos; no hay nada que suavizar.")
-    exempt_start = max(exempt_km, haversine_km(head[0], raw[0])) if head else 0.0
-    exempt_end = max(exempt_km, haversine_km(raw[-1], tail[0])) if tail else 0.0
-    for max_hop in (None, 3):
-        simplified = simplify_path(raw, field, max_hop)
-        curve = catmull_rom(head + simplified + tail)
-        if not _crosses_land_outside_ends(curve, field, exempt_start, exempt_end):
-            return SmoothingResult(curve, True, len(simplified), max_deviation_km(curve, reference), None)
+    ends = []
+    if head:
+        ends.append((head[0], max(exempt_km, haversine_km(head[0], raw[0]))))
+    if tail:
+        ends.append((tail[0], max(exempt_km, haversine_km(raw[-1], tail[0]))))
+    guard = LandGuard(field, mask, ends)
+    for max_hop in (None, 3, 1):
+        simplified = simplify_path(full, max_hop=max_hop, guard=guard)
+        curve = catmull_rom(simplified)
+        if guard.path_clear(curve):
+            return SmoothingResult(curve, True, len(simplified), max_deviation_km(curve, full), None)
     return SmoothingResult(
-        reference, False, len(raw), 0.0, "El suavizado toca tierra o celdas sin datos; se conserva la ruta A* original."
+        full, False, len(raw), 0.0, "El suavizado toca tierra o celdas sin datos; se conserva la ruta A* original."
     )

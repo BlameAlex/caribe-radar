@@ -5,6 +5,7 @@ import math
 import numpy as np
 
 from app.smoothing import catmull_rom, crosses_land, simplify_path, smooth_route
+from app.landmask import LandMask
 from mapeo_ruta.ocean_data import OceanCurrentField
 
 
@@ -116,3 +117,36 @@ def test_connector_over_coast_is_exempt_but_astar_part_is_checked() -> None:
     field = _field(water)
     blocked = smooth_route(raw, field, origin_on_land, [10.8, 0.3])
     assert not blocked.applied and blocked.coordinates[0] == origin_on_land
+
+
+def _mask(land: np.ndarray) -> LandMask:
+    n_rows, n_cols = land.shape
+    return LandMask(np.arange(n_rows) * 0.01, 10.0 + np.arange(n_cols) * 0.01, land)
+
+
+def test_landmask_reports_coverage_and_land() -> None:
+    land = np.zeros((10, 10), dtype=bool)
+    land[5, 5] = True
+    covered, is_land = _mask(land).query(np.array([[10.05, 0.05], [10.02, 0.02], [11.0, 0.05]]))
+    assert covered.tolist() == [True, True, False]
+    assert is_land.tolist() == [True, False, False]
+
+
+def test_overshooting_end_node_is_dropped_instead_of_hairpin() -> None:
+    field = _field(np.ones((12, 12), dtype=bool))
+    raw = [[10.2 + 0.05 * i, 0.3] for i in range(10)]  # el A* llega a 10.65, pasado el destino
+    destination = [10.55, 0.3]
+    result = smooth_route(raw, field, [10.15, 0.3], destination)
+    assert result.applied and result.coordinates[-1] == destination
+    assert max(_turns(result.coordinates)) < 5
+
+
+def test_fine_mask_rejects_curve_over_land_beyond_port_cell() -> None:
+    field = _field(np.ones((12, 12), dtype=bool))
+    land = np.zeros((120, 120), dtype=bool)
+    land[28:33, 3:7] = True  # tierra sobre el conector, a ~3-7 km del origen (celdas de ~1 km)
+    mask = _mask(land)
+    raw = [[10.8, 0.3], [10.9, 0.3]]
+    blocked = smooth_route(raw, field, [10.0, 0.3], [10.95, 0.3], mask=mask)
+    assert not blocked.applied
+    assert smooth_route(raw, field, [10.0, 0.6], [10.95, 0.6], mask=mask).applied

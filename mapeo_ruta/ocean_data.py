@@ -279,8 +279,10 @@ def refine_field_for_routing(
     new_lats = np.linspace(field.lats[0], field.lats[-1], new_n_lat)
     new_lons = np.linspace(field.lons[0], field.lons[-1], new_n_lon)
 
-    # Bilineal en numpy (sin scipy). Un vecino con peso 0 no contamina (nodos originales intactos);
-    # cualquier celda con peso > 0 sobre NaN queda NaN.
+    # Bilineal en numpy (sin scipy), renormalizada sobre las esquinas válidas. La máscara de agua es
+    # la de la celda gruesa más cercana: así la conectividad del agua nunca es menor que en la malla
+    # original (con NaN propagado se cortaban los pasos diagonales y quedaban bolsas aisladas) y no se
+    # extrapola más allá de la mitad de una celda gruesa de agua.
     def _bilinear(values: np.ndarray) -> np.ndarray:
         def axis(old: np.ndarray, new: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             lo = np.clip(np.searchsorted(old, new, side="right") - 1, 0, len(old) - 2)
@@ -288,14 +290,19 @@ def refine_field_for_routing(
 
         r0, wr = axis(field.lats, new_lats)
         c0, wc = axis(field.lons, new_lons)
-        wr, wc = wr[:, None], wc[None, :]
-        out = np.zeros((len(new_lats), len(new_lons)))
-        for dr, wrow in ((0, 1 - wr), (1, wr)):
-            for dc, wcol in ((0, 1 - wc), (1, wc)):
-                weight = wrow * wcol
+        wr2, wc2 = wr[:, None], wc[None, :]
+        total = np.zeros((len(new_lats), len(new_lons)))
+        norm = np.zeros_like(total)
+        for dr, wrow in ((0, 1 - wr2), (1, wr2)):
+            for dc, wcol in ((0, 1 - wc2), (1, wc2)):
                 corner = values[(r0 + dr)[:, None], (c0 + dc)[None, :]]
-                out += np.where(weight > 1e-12, weight * corner, 0.0)
-        return out
+                weight = np.where(np.isfinite(corner), wrow * wcol, 0.0)
+                total += weight * np.nan_to_num(corner)
+                norm += weight
+        nearest = np.isfinite(
+            values[(r0 + (wr > 0.5))[:, None], (c0 + (wc > 0.5))[None, :]]
+        )
+        return np.where(nearest & (norm > 1e-12), total / np.maximum(norm, 1e-12), np.nan)
 
     uo_interp = _bilinear(field.uo)
     vo_interp = _bilinear(field.vo)

@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     refine_factor: int = 3
     cache_dir: Path = Path("data/cache")
     smoothing: bool = True
+    land_mask_path: Path | None = None  # máscara OLCI 1 km (static.nc); None = solo la malla del modelo
     smoothing_samples: int = 8
     sargassum_export_dir: Path = Path("../caribe-radar-ml/artifacts/exports")
     cors_origins: list[str] = []

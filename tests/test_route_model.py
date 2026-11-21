@@ -310,3 +310,38 @@ def test_route_request_ignores_unknown_fields() -> None:
         }
     )
     assert request.origin.lat == 20.0 and request.destination.lon == -86.1
+
+
+def test_refine_keeps_one_cell_corridor_connected() -> None:
+    from mapeo_ruta.ocean_data import refine_field_for_routing
+    from mapeo_ruta.route_optimizer import run_astar
+
+    lats, lons = np.array([0.0, 0.1, 0.2]), np.array([0.0, 0.1, 0.2])
+    uo = np.full((3, 3), np.nan)
+    uo[0, 0] = uo[0, 1] = uo[1, 1] = uo[2, 1] = uo[2, 2] = 0.0  # pasillo de una celda con dos giros
+    field = OceanCurrentField(
+        lats=lats, lons=lons, uo=uo, vo=uo.copy(), selected_time="t", selected_depth_m=0.5,
+        dimensions={"latitude": 3, "longitude": 3}, available_variables=["uo", "vo"], is_simulated=True,
+    )
+    refined = refine_field_for_routing(field, factor=3)
+    assert refined.water_mask[0, 0] and refined.water_mask[-1, -1]
+    assert not refined.water_mask[0, -1]  # no se extrapola agua hacia la tierra lejana
+    assert run_astar(refined, (0, 0), (6, 6), 4.0).found
+
+
+def test_candidate_nodes_skip_nodes_whose_connector_crosses_land() -> None:
+    from app.landmask import LandMask
+    from app.routing import _candidate_nodes
+
+    lats, lons = np.array([0.0, 0.1]), np.array([10.0, 10.1])
+    uo = np.zeros((2, 2))
+    field = OceanCurrentField(
+        lats=lats, lons=lons, uo=uo, vo=uo.copy(), selected_time="t", selected_depth_m=0.5,
+        dimensions={"latitude": 2, "longitude": 2}, available_variables=["uo", "vo"], is_simulated=True,
+    )
+    land = np.zeros((20, 20), dtype=bool)
+    land[0:5, 0:20] = True  # tierra al sur (hasta lat 0.045)
+    mask = LandMask(np.arange(20) * 0.01, 10.0 + np.arange(20) * 0.01, land)
+    point = [10.05, 0.048]
+    assert _candidate_nodes(field, point, None)[0] in {(0, 0), (0, 1)}  # sin máscara: el más cercano
+    assert all(row == 1 for row, _ in _candidate_nodes(field, point, mask))
