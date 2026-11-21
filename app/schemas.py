@@ -27,6 +27,8 @@ class SmoothingMeta(BaseModel):
 class RouteMeta(BaseModel):
     distance_km: float
     time_minutes: float
+    origin_connector_km: float = 0.0
+    destination_connector_km: float = 0.0
     data_source: str
     selected_time: str
     snap_warnings: list[str]

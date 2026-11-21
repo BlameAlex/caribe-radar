@@ -10,7 +10,7 @@ from mapeo_ruta.route_optimizer import optimize_maritime_route
 
 from app.schemas import Point
 from app.settings import settings
-from app.smoothing import METHOD, SmoothingResult, smooth_route
+from app.smoothing import METHOD, SmoothingResult, haversine_km, smooth_route
 
 
 class RouteInputError(ValueError):
@@ -74,18 +74,27 @@ def calculate_route(origin: Point, destination: Point) -> dict[str, object]:
     if geojson is None:
         return {"not_found": route_result.message}
     raw = geojson["geometry"]["coordinates"]
-    # Distancia y tiempo son los de la ruta A* validada (nodos de la cuadrícula); la curva suavizada
-    # solo mejora la geometría y se desvía de ella `max_deviation_km`.
+    # Conectores rectos entre el punto pedido y el nodo A* (la cuadrícula es de ~3-9 km): se suman a
+    # distancia y tiempo (a velocidad del buque, sin corriente). El resto es el valor de la ruta A*
+    # validada; la curva suavizada solo mejora la geometría (se desvía `max_deviation_km`).
+    origin_ll, destination_ll = [a.lon, a.lat], [b.lon, b.lat]
+    origin_km = haversine_km(origin_ll, raw[0])
+    destination_km = haversine_km(raw[-1], destination_ll)
+    connector_min = (origin_km + destination_km) / (settings.vessel_speed_knots * 1.852) * 60.0
     if settings.smoothing:
-        smoothed = smooth_route(raw, routing_field)
+        smoothed = smooth_route(raw, routing_field, origin_ll, destination_ll)
     else:
-        smoothed = SmoothingResult(raw, False, len(raw), 0.0, "El suavizado está desactivado en la configuración.")
+        smoothed = SmoothingResult(
+            [origin_ll, *raw, destination_ll], False, len(raw), 0.0, "El suavizado está desactivado en la configuración."
+        )
     coordinates = smoothed.coordinates
     return {
         "route": {**geojson["geometry"], "coordinates": coordinates},
         "meta": {
-            "distance_km": route_result.distance_km,
-            "time_minutes": route_result.time_minutes,
+            "distance_km": round(route_result.distance_km + origin_km + destination_km, 3),
+            "origin_connector_km": round(origin_km, 3),
+            "destination_connector_km": round(destination_km, 3),
+            "time_minutes": round(route_result.time_minutes + connector_min, 2),
             "data_source": acquisition.source_label,
             "selected_time": routing_field.selected_time,
             "snap_warnings": [

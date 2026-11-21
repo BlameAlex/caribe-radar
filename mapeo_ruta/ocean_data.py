@@ -279,12 +279,26 @@ def refine_field_for_routing(
     new_lats = np.linspace(field.lats[0], field.lats[-1], new_n_lat)
     new_lons = np.linspace(field.lons[0], field.lons[-1], new_n_lon)
 
-    da_uo = xr.DataArray(field.uo, coords={"lat": field.lats, "lon": field.lons}, dims=("lat", "lon"))
-    da_vo = xr.DataArray(field.vo, coords={"lat": field.lats, "lon": field.lons}, dims=("lat", "lon"))
+    # Bilineal en numpy (sin scipy). Un vecino con peso 0 no contamina (nodos originales intactos);
+    # cualquier celda con peso > 0 sobre NaN queda NaN.
+    def _bilinear(values: np.ndarray) -> np.ndarray:
+        def axis(old: np.ndarray, new: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            lo = np.clip(np.searchsorted(old, new, side="right") - 1, 0, len(old) - 2)
+            return lo, (new - old[lo]) / (old[lo + 1] - old[lo])
 
-    # La interpolación lineal en xarray propaga NaN si alguno de los 4 vecinos es NaN.
-    uo_interp = da_uo.interp(lat=new_lats, lon=new_lons, method="linear").values
-    vo_interp = da_vo.interp(lat=new_lats, lon=new_lons, method="linear").values
+        r0, wr = axis(field.lats, new_lats)
+        c0, wc = axis(field.lons, new_lons)
+        wr, wc = wr[:, None], wc[None, :]
+        out = np.zeros((len(new_lats), len(new_lons)))
+        for dr, wrow in ((0, 1 - wr), (1, wr)):
+            for dc, wcol in ((0, 1 - wc), (1, wc)):
+                weight = wrow * wcol
+                corner = values[(r0 + dr)[:, None], (c0 + dc)[None, :]]
+                out += np.where(weight > 1e-12, weight * corner, 0.0)
+        return out
+
+    uo_interp = _bilinear(field.uo)
+    vo_interp = _bilinear(field.vo)
 
     return OceanCurrentField(
         lats=new_lats,

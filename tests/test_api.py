@@ -50,6 +50,7 @@ def test_same_point_and_excessive_span_return_422() -> None:
 def test_synthetic_route_returns_lon_lat_geojson(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     result = generate_simulated_netcdf(get_default_scenario(), output_path=tmp_path / "synthetic.nc")
     monkeypatch.setattr(routing, "acquire_ocean_data", lambda **kwargs: result)
+    monkeypatch.setattr(routing.settings, "refine_factor", 1)  # el ajuste de la prueba usa la malla original
     response = client.post("/api/v1/routes", json=_default_request())
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -64,10 +65,12 @@ def test_synthetic_route_returns_lon_lat_geojson(monkeypatch: pytest.MonkeyPatch
     field = load_ocean_currents(result.netcdf_path, target_datetime=get_default_scenario().target_datetime)
     origin_snap = snap_point_to_water(field, DEFAULT_ORIGIN, "Origen")
     destination_snap = snap_point_to_water(field, DEFAULT_DESTINATION, "Destino")
-    assert route["coordinates"][0][0] == pytest.approx(origin_snap.node_lon, abs=1e-6)
-    assert route["coordinates"][0][1] == pytest.approx(origin_snap.node_lat, abs=1e-6)
-    assert route["coordinates"][-1][0] == pytest.approx(destination_snap.node_lon, abs=1e-6)
-    assert route["coordinates"][-1][1] == pytest.approx(destination_snap.node_lat, abs=1e-6)
+    meta = payload["meta"]
+    # extremos = puntos solicitados exactos; los conectores parten de los nodos A* ajustados
+    assert route["coordinates"][0] == [DEFAULT_ORIGIN.lon, DEFAULT_ORIGIN.lat]
+    assert route["coordinates"][-1] == [DEFAULT_DESTINATION.lon, DEFAULT_DESTINATION.lat]
+    assert meta["origin_connector_km"] == pytest.approx(origin_snap.displacement_m / 1000.0, abs=0.01)
+    assert meta["destination_connector_km"] == pytest.approx(destination_snap.displacement_m / 1000.0, abs=0.01)
     assert "SIMULADOS" in payload["meta"]["data_source"]
 
 
@@ -80,7 +83,9 @@ def test_synthetic_land_guard_keeps_raw_route(monkeypatch: pytest.MonkeyPatch, t
     original_curve = smoothing.catmull_rom
 
     def append_land_point(coords: list[list[float]]) -> list[list[float]]:
-        return [*original_curve(coords), land_point]
+        curve = original_curve(coords)
+        curve.insert(len(curve) // 2, land_point)  # en medio: los extremos están exentos del chequeo
+        return curve
 
     monkeypatch.setattr(routing.settings, "smoothing", False)
     raw_response = client.post("/api/v1/routes", json=_default_request())

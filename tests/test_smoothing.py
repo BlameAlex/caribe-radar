@@ -91,3 +91,28 @@ def test_catmull_rom_passes_through_controls() -> None:
     curve = catmull_rom(controls)
     assert curve[0] == controls[0] and curve[-1] == controls[-1]
     assert any(np.allclose(p, controls[1]) for p in curve)
+
+
+def test_connectors_keep_requested_endpoints_and_smooth_joints() -> None:
+    field = _field(np.ones((12, 12), dtype=bool))
+    raw = [[10.2 + 0.1 * i, 0.3] for i in range(6)]
+    origin, destination = [10.1, 0.35], [10.8, 0.45]
+    result = smooth_route(raw, field, origin, destination)
+
+    assert result.applied
+    assert result.coordinates[0] == origin and result.coordinates[-1] == destination
+    assert max(_turns(result.coordinates)) < 15  # sin quiebres en las uniones conector/A*
+
+
+def test_connector_over_coast_is_exempt_but_astar_part_is_checked() -> None:
+    water = np.ones((12, 12), dtype=bool)
+    water[:, 0:2] = False  # franja costera sin datos de ~0.2°
+    field = _field(water)
+    raw = [[10.2 + 0.1 * i, 0.3] for i in range(6)]
+    origin_on_land = [10.0, 0.3]  # conector de ~22 km sobre la franja sin datos
+    assert smooth_route(raw, field, origin_on_land, [10.8, 0.3]).applied
+
+    water[2:4, 3:8] = False  # tierra sobre el tramo A* (curva) → se rechaza
+    field = _field(water)
+    blocked = smooth_route(raw, field, origin_on_land, [10.8, 0.3])
+    assert not blocked.applied and blocked.coordinates[0] == origin_on_land

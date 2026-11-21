@@ -118,19 +118,55 @@ class SmoothingResult:
     reason: str | None
 
 
-def smooth_route(raw: list[list[float]], field: OceanCurrentField) -> SmoothingResult:
+def haversine_km(a: list[float], b: list[float]) -> float:
+    """Distancia (km) entre dos puntos [lon, lat]."""
+    p1, p2 = math.radians(a[1]), math.radians(b[1])
+    h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(b[0] - a[0]) / 2) ** 2
+    return 12742.0 * math.asin(math.sqrt(h))
+
+
+def _crosses_land_outside_ends(
+    curve: list[list[float]], field: OceanCurrentField, exempt_start_km: float, exempt_end_km: float
+) -> bool:
+    """Como crosses_land, pero ignora las muestras a lo largo de la curva dentro de cada tramo exento de los extremos."""
+    if exempt_start_km <= 0 and exempt_end_km <= 0:
+        return crosses_land(curve, field)
+    steps = np.array([haversine_km(curve[i], curve[i + 1]) for i in range(len(curve) - 1)])
+    along = np.concatenate(([0.0], np.cumsum(steps)))
+    keep = (along > exempt_start_km) & (along < along[-1] - exempt_end_km)
+    inner = [c for c, k in zip(curve, keep) if k]
+    return crosses_land(inner, field)
+
+
+def smooth_route(
+    raw: list[list[float]],
+    field: OceanCurrentField,
+    origin: list[float] | None = None,
+    destination: list[float] | None = None,
+    exempt_km: float = 2.0,
+) -> SmoothingResult:
     """Simplifica el camino A* por línea de visión y lo suaviza con Catmull-Rom, validando contra tierra.
 
-    Intenta simplificación total, luego una menos agresiva (saltos de hasta 3 nodos); si ninguna
-    curva está libre de tierra, devuelve el camino A* original.
+    `origin`/`destination` ([lon, lat] solicitados) se anteponen/añaden como conectores desde los nodos
+    A*, dentro de la misma curva (sin quiebres en las uniones). Con conectores, las muestras a menos de
+    `exempt_km` de cada extremo, o toda la longitud del conector si es mayor, no se validan contra tierra:
+    los puertos están en la costa y la franja costera sin datos del modelo es más ancha que 2 km, así que
+    el conector cruza celdas que el modelo no puede verificar. El tramo A* sí se valida completo.
+    Intenta simplificación total, luego una menos agresiva (saltos de hasta 3 nodos); si ninguna curva
+    está libre de tierra, devuelve el A* original con conectores rectos.
     """
-    if len(raw) < 3:
+    head = [list(origin)] if origin and list(origin) != raw[0] else []
+    tail = [list(destination)] if destination and list(destination) != raw[-1] else []
+    reference = head + raw + tail
+    if len(raw) < 3 and not (head or tail):
         return SmoothingResult(raw, False, len(raw), 0.0, "La ruta tiene menos de 3 puntos; no hay nada que suavizar.")
+    exempt_start = max(exempt_km, haversine_km(head[0], raw[0])) if head else 0.0
+    exempt_end = max(exempt_km, haversine_km(raw[-1], tail[0])) if tail else 0.0
     for max_hop in (None, 3):
         simplified = simplify_path(raw, field, max_hop)
-        curve = catmull_rom(simplified)
-        if not crosses_land(curve, field):
-            return SmoothingResult(curve, True, len(simplified), max_deviation_km(curve, raw), None)
+        curve = catmull_rom(head + simplified + tail)
+        if not _crosses_land_outside_ends(curve, field, exempt_start, exempt_end):
+            return SmoothingResult(curve, True, len(simplified), max_deviation_km(curve, reference), None)
     return SmoothingResult(
-        raw, False, len(raw), 0.0, "El suavizado toca tierra o celdas sin datos; se conserva la ruta A* original."
+        reference, False, len(raw), 0.0, "El suavizado toca tierra o celdas sin datos; se conserva la ruta A* original."
     )
