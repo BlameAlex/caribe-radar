@@ -33,4 +33,4 @@ def list_ports() -> list[dict[str, object]]:
     try:
         return load_ports()
     except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail=f"ports file unavailable: {exc}") from exc
+        raise HTTPException(status_code=503, detail="ports file unavailable") from exc

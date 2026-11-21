@@ -219,7 +219,7 @@ def _cache(run_id: str | None) -> dict[str, Any]:
     try:
         return json.loads(path.read_text())
     except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail=f"Alert cache unreadable: {exc}") from exc
+        raise HTTPException(status_code=503, detail="Alert cache unreadable; rerun the precompute CLI.") from exc
 
 
 RunQuery = Annotated[str | None, Query(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]

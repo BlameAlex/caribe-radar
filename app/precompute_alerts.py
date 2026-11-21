@@ -44,9 +44,10 @@ def route_entry(port: dict[str, Any], dest: dict[str, float]) -> dict[str, Any]:
     try:
         result = calculate_route(Point(lat=port["lat"], lon=port["lng"]), Point(lat=dest["lat"], lon=dest["lon"]))
     except Exception as exc:  # per-route failures are recorded, not fatal
-        return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        print(f"route to {port['id']} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return {"status": "error", "error": f"route_failed:{type(exc).__name__}"}
     if "not_found" in result:
-        return {"status": "error", "error": str(result["not_found"])}
+        return {"status": "error", "error": "route_not_found"}
     return {"status": "ok", "route": result["route"], "meta": result["meta"]}
 
 
@@ -83,8 +84,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         field = load_zone_field(cy, cx)
     except Exception as exc:
-        field_note = f"destination water check skipped: {type(exc).__name__}: {exc}"
-        print(field_note, file=sys.stderr)
+        print(f"destination water check skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
+        field_note = "destination_water_check_skipped"
     alerts, manifest, info = alerts_mod.detect_alerts(run_dir, args.min_density, field, args.top)
     if field_note:
         info["warning"] = field_note
