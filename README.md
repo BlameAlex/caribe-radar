@@ -42,6 +42,22 @@ La geometría se suaviza por defecto con una B-spline cúbica clamped, usando lo
 
 Errores: `422` por campos o coordenadas inválidas, puntos iguales o extensión superior a 3 grados; `404` si la malla no permite una ruta; `503` si Copernicus no está disponible o falla la adquisición de datos. Los detalles dependen del resultado real del proveedor.
 
+## Sargazo: pronóstico por pasos de 30 min
+
+La API sirve en modo solo lectura los archivos estáticos exportados por `caribe-radar-ml` (`SARGASSUM_EXPORT_DIR`, por defecto `../caribe-radar-ml/artifacts/exports`). Las respuestas van comprimidas con gzip y las de datos de una corrida llevan `Cache-Control` inmutable. `CORS_ORIGINS` (lista JSON, p. ej. `["http://localhost:3000"]`) activa CORS. La densidad es relativa: no es un volumen medido.
+
+```sh
+RUN=2026-06-29T16-00-00Z_smol-lanot-1km-30min
+curl -H 'Accept-Encoding: gzip' --compressed localhost:8000/api/v1/sargassum/runs
+curl localhost:8000/api/v1/sargassum/runs/$RUN/manifest
+curl --compressed localhost:8000/api/v1/sargassum/runs/$RUN/frames/0      # minutos desde T0 (0, 30, ..., 4320)
+curl localhost:8000/api/v1/sargassum/runs/$RUN/arrivals
+curl localhost:8000/api/v1/sargassum/runs/$RUN/arrivals/origin
+curl "localhost:8000/api/v1/sargassum/collection-areas?run_id=$RUN"
+```
+
+`run_id` y `minutes` se validan con expresiones regulares estrictas (`422`) y la ruta resuelta debe quedar dentro del directorio de exportación; si el archivo no existe, `404`.
+
 ## Resultados de verificación reales
 
 El `curl` real Cancún → Playa del Carmen respondió `200`. Copernicus reutilizó un NetCDF real que ya estaba en caché. La respuesta aplicó el suavizado: nueve puntos A* produjeron 49 puntos, con los extremos anclados a las celdas marinas ajustadas (desplazamientos de 10.54 km y 5.24 km).

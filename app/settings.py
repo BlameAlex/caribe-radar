@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     cache_dir: Path = Path("data/cache")
     smoothing: bool = True
     smoothing_samples: int = 8
+    sargassum_export_dir: Path = Path("../caribe-radar-ml/artifacts/exports")
+    cors_origins: list[str] = []
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 
